@@ -29,15 +29,15 @@ type Model struct {
 	packageProgress     packageInstallProgressMsg
 	installationLogs    []string
 
-	selectedWM          int
-	selectedTerminal    int
-	selectedDep         int
-	selectedConfig      int
-	reinstallItems      map[string]bool
-	replaceConfigs      map[string]bool
-	sudoPassword        string
-	existingConfigs     []ExistingConfigInfo
-	fingerprintFailed   bool
+	selectedWM        int
+	selectedTerminal  int
+	selectedDep       int
+	selectedConfig    int
+	reinstallItems    map[string]bool
+	replaceConfigs    map[string]bool
+	sudoPassword      string
+	existingConfigs   []ExistingConfigInfo
+	fingerprintFailed bool
 }
 
 func NewModel(version string) Model {
