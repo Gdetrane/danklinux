@@ -243,9 +243,26 @@ func checkFingerprintEnabled() bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
+	// Check if pam_fprintd.so is in PAM config
 	cmd := exec.CommandContext(ctx, "grep", "-q", "pam_fprintd.so", "/etc/pam.d/system-auth")
-	err := cmd.Run()
-	return err == nil
+	if err := cmd.Run(); err != nil {
+		return false
+	}
+
+	// Check if fprintd-list exists and user has enrolled fingerprints
+	user := os.Getenv("USER")
+	if user == "" {
+		return false
+	}
+
+	listCmd := exec.CommandContext(ctx, "fprintd-list", user)
+	output, err := listCmd.CombinedOutput()
+	if err != nil {
+		return false
+	}
+
+	// If output contains "finger:" or similar, fingerprints are enrolled
+	return strings.Contains(string(output), "finger")
 }
 
 func checkSudoCached() bool {
