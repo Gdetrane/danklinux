@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"io"
 	"os/exec"
 	"strings"
 	"time"
@@ -115,29 +116,41 @@ func (m Model) updatePasswordPromptState(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) validatePassword(password string) tea.Cmd {
 	return func() tea.Msg {
-		// Test password with sudo -v (validate)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		// Use a more reliable method that properly handles special characters
-		// Instead of using shell command with echo, we'll write directly to stdin
 		cmd := exec.CommandContext(ctx, "sudo", "-S", "-v")
 
-		// Get stdin pipe and write password to it
 		stdin, err := cmd.StdinPipe()
 		if err != nil {
 			return passwordValidMsg{password: "", valid: false}
 		}
 
-		// Write password followed by newline
-		go func() {
-			defer stdin.Close()
-			fmt.Fprintf(stdin, "%s\n", password)
-		}()
+		// Capture stderr to prevent buffer blocking
+		stderr, err := cmd.StderrPipe()
+		if err != nil {
+			stdin.Close()
+			return passwordValidMsg{password: "", valid: false}
+		}
 
-		// Capture both stdout and stderr to see what's happening
-		output, err := cmd.CombinedOutput()
-		outputStr := string(output)
+		if err := cmd.Start(); err != nil {
+			stdin.Close()
+			return passwordValidMsg{password: "", valid: false}
+		}
+
+		// Write password to stdin
+		_, writeErr := fmt.Fprintf(stdin, "%s\n", password)
+		stdin.Close()
+
+		if writeErr != nil {
+			cmd.Wait()
+			return passwordValidMsg{password: "", valid: false}
+		}
+
+		// Drain stderr to prevent sudo from blocking
+		io.ReadAll(stderr)
+
+		err = cmd.Wait()
 
 		if err != nil {
 			if ctx.Err() == context.DeadlineExceeded {
@@ -145,13 +158,7 @@ func (m Model) validatePassword(password string) tea.Cmd {
 				return passwordValidMsg{password: "", valid: false}
 			}
 
-			if strings.Contains(outputStr, "Sorry, try again") ||
-				strings.Contains(outputStr, "incorrect password") ||
-				strings.Contains(outputStr, "authentication failure") {
-				return passwordValidMsg{password: "", valid: false}
-			}
-
-			// Other error - probably authentication failure
+			// Authentication failure
 			return passwordValidMsg{password: "", valid: false}
 		}
 

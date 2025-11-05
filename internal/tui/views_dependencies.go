@@ -148,6 +148,10 @@ func (m Model) updateDependencyReviewState(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case "enter":
+			// Clear password input and reset state before transitioning
+			m.passwordInput.SetValue("")
+			m.passwordInput.Focus()
+			m.packageProgress = packageInstallProgressMsg{}
 			m.state = StatePasswordPrompt
 			m.isLoading = false
 			return m, nil
