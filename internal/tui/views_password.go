@@ -3,12 +3,83 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+func (m Model) viewAuthMethodChoice() string {
+	var b strings.Builder
+
+	b.WriteString(m.renderBanner())
+	b.WriteString("\n")
+
+	title := m.styles.Title.Render("Authentication Method")
+	b.WriteString(title)
+	b.WriteString("\n\n")
+
+	message := "Fingerprint authentication is available.\nHow would you like to authenticate?"
+	b.WriteString(m.styles.Normal.Render(message))
+	b.WriteString("\n\n")
+
+	// Option 0: Fingerprint
+	if m.selectedConfig == 0 {
+		option := m.styles.SelectedOption.Render("▶ Use Fingerprint")
+		b.WriteString(option)
+	} else {
+		option := m.styles.Normal.Render("  Use Fingerprint")
+		b.WriteString(option)
+	}
+	b.WriteString("\n")
+
+	// Option 1: Password
+	if m.selectedConfig == 1 {
+		option := m.styles.SelectedOption.Render("▶ Use Password")
+		b.WriteString(option)
+	} else {
+		option := m.styles.Normal.Render("  Use Password")
+		b.WriteString(option)
+	}
+	b.WriteString("\n\n")
+
+	help := m.styles.Subtle.Render("↑/↓: Navigate, Enter: Select, Esc: Back")
+	b.WriteString(help)
+
+	return b.String()
+}
+
+func (m Model) viewFingerprintAuth() string {
+	var b strings.Builder
+
+	b.WriteString(m.renderBanner())
+	b.WriteString("\n")
+
+	title := m.styles.Title.Render("Fingerprint Authentication")
+	b.WriteString(title)
+	b.WriteString("\n\n")
+
+	if m.fingerprintFailed {
+		errorMsg := m.styles.Error.Render("✗ Fingerprint authentication failed")
+		b.WriteString(errorMsg)
+		b.WriteString("\n")
+		retryMsg := m.styles.Subtle.Render("Returning to authentication menu...")
+		b.WriteString(retryMsg)
+	} else {
+		message := "Please place your finger on the fingerprint reader."
+		b.WriteString(m.styles.Normal.Render(message))
+		b.WriteString("\n\n")
+
+		spinner := m.spinner.View()
+		status := m.styles.Normal.Render("Waiting for fingerprint...")
+		b.WriteString(fmt.Sprintf("%s %s", spinner, status))
+	}
+
+	return b.String()
+}
 
 func (m Model) viewPasswordPrompt() string {
 	var b strings.Builder
@@ -16,7 +87,7 @@ func (m Model) viewPasswordPrompt() string {
 	b.WriteString(m.renderBanner())
 	b.WriteString("\n")
 
-	title := m.styles.Title.Render("Sudo Authentication")
+	title := m.styles.Title.Render("Password Authentication")
 	b.WriteString(title)
 	b.WriteString("\n\n")
 
@@ -49,6 +120,61 @@ func (m Model) viewPasswordPrompt() string {
 	b.WriteString(help)
 
 	return b.String()
+}
+
+func (m Model) updateAuthMethodChoiceState(msg tea.Msg) (tea.Model, tea.Cmd) {
+	m.fingerprintFailed = false
+
+	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		switch keyMsg.String() {
+		case "up":
+			if m.selectedConfig > 0 {
+				m.selectedConfig--
+			}
+		case "down":
+			if m.selectedConfig < 1 {
+				m.selectedConfig++
+			}
+		case "enter":
+			if m.selectedConfig == 0 {
+				m.state = StateFingerprintAuth
+				m.isLoading = true
+				return m, tea.Batch(m.spinner.Tick, m.tryFingerprint())
+			} else {
+				m.state = StatePasswordPrompt
+				m.passwordInput.Focus()
+				return m, nil
+			}
+		case "esc":
+			m.state = StateDependencyReview
+			return m, nil
+		}
+	}
+	return m, nil
+}
+
+func (m Model) updateFingerprintAuthState(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if validMsg, ok := msg.(passwordValidMsg); ok {
+		if validMsg.valid {
+			m.sudoPassword = ""
+			m.packageProgress = packageInstallProgressMsg{}
+			m.state = StateInstallingPackages
+			m.isLoading = true
+			return m, tea.Batch(m.spinner.Tick, m.installPackages())
+		} else {
+			m.fingerprintFailed = true
+			return m, m.delayThenReturn()
+		}
+	}
+
+	if _, ok := msg.(delayCompleteMsg); ok {
+		m.fingerprintFailed = false
+		m.selectedConfig = 0
+		m.state = StateAuthMethodChoice
+		return m, nil
+	}
+
+	return m, m.listenForLogs()
 }
 
 func (m Model) updatePasswordPromptState(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -113,49 +239,92 @@ func (m Model) updatePasswordPromptState(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m Model) validatePassword(password string) tea.Cmd {
+func checkFingerprintEnabled() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "grep", "-q", "pam_fprintd.so", "/etc/pam.d/system-auth")
+	err := cmd.Run()
+	return err == nil
+}
+
+func checkSudoCached() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "sudo", "-n", "true")
+	err := cmd.Run()
+	return err == nil
+}
+
+func (m Model) delayThenReturn() tea.Cmd {
 	return func() tea.Msg {
-		// Test password with sudo -v (validate)
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		time.Sleep(2 * time.Second)
+		return delayCompleteMsg{}
+	}
+}
+
+func (m Model) tryFingerprint() tea.Cmd {
+	return func() tea.Msg {
+		clearCmd := exec.Command("sudo", "-k")
+		clearCmd.Run()
+
+		tmpDir := os.TempDir()
+		askpassScript := filepath.Join(tmpDir, fmt.Sprintf("danklinux-fp-%d.sh", time.Now().UnixNano()))
+
+		scriptContent := "#!/bin/sh\nexit 1\n"
+		if err := os.WriteFile(askpassScript, []byte(scriptContent), 0700); err != nil {
+			return passwordValidMsg{password: "", valid: false}
+		}
+		defer os.Remove(askpassScript)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 
-		// Use a more reliable method that properly handles special characters
-		// Instead of using shell command with echo, we'll write directly to stdin
+		cmd := exec.CommandContext(ctx, "sudo", "-A", "-v")
+		cmd.Env = append(os.Environ(), fmt.Sprintf("SUDO_ASKPASS=%s", askpassScript))
+
+		err := cmd.Run()
+
+		if err != nil {
+			return passwordValidMsg{password: "", valid: false}
+		}
+
+		return passwordValidMsg{password: "", valid: true}
+	}
+}
+
+func (m Model) validatePassword(password string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
 		cmd := exec.CommandContext(ctx, "sudo", "-S", "-v")
 
-		// Get stdin pipe and write password to it
 		stdin, err := cmd.StdinPipe()
 		if err != nil {
 			return passwordValidMsg{password: "", valid: false}
 		}
 
-		// Write password followed by newline
-		go func() {
-			defer stdin.Close()
-			fmt.Fprintf(stdin, "%s\n", password)
-		}()
-
-		// Capture both stdout and stderr to see what's happening
-		output, err := cmd.CombinedOutput()
-		outputStr := string(output)
-
-		if err != nil {
-			if ctx.Err() == context.DeadlineExceeded {
-				// Timeout - probably stuck waiting for password
-				return passwordValidMsg{password: "", valid: false}
-			}
-
-			if strings.Contains(outputStr, "Sorry, try again") ||
-				strings.Contains(outputStr, "incorrect password") ||
-				strings.Contains(outputStr, "authentication failure") {
-				return passwordValidMsg{password: "", valid: false}
-			}
-
-			// Other error - probably authentication failure
+		if err := cmd.Start(); err != nil {
 			return passwordValidMsg{password: "", valid: false}
 		}
 
-		// Command succeeded - password is valid
+		_, err = fmt.Fprintf(stdin, "%s\n", password)
+		stdin.Close()
+		if err != nil {
+			return passwordValidMsg{password: "", valid: false}
+		}
+
+		err = cmd.Wait()
+
+		if err != nil {
+			if ctx.Err() == context.DeadlineExceeded {
+				return passwordValidMsg{password: "", valid: false}
+			}
+			return passwordValidMsg{password: "", valid: false}
+		}
+
 		return passwordValidMsg{password: password, valid: true}
 	}
 }

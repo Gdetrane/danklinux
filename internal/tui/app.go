@@ -29,14 +29,15 @@ type Model struct {
 	packageProgress     packageInstallProgressMsg
 	installationLogs    []string
 
-	selectedWM       int
-	selectedTerminal int
-	selectedDep      int
-	selectedConfig   int
-	reinstallItems   map[string]bool
-	replaceConfigs   map[string]bool
-	sudoPassword     string
-	existingConfigs  []ExistingConfigInfo
+	selectedWM          int
+	selectedTerminal    int
+	selectedDep         int
+	selectedConfig      int
+	reinstallItems      map[string]bool
+	replaceConfigs      map[string]bool
+	sudoPassword        string
+	existingConfigs     []ExistingConfigInfo
+	fingerprintFailed   bool
 }
 
 func NewModel(version string) Model {
@@ -127,6 +128,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateDetectingDepsState(msg)
 	case StateDependencyReview:
 		return m.updateDependencyReviewState(msg)
+	case StateAuthMethodChoice:
+		return m.updateAuthMethodChoiceState(msg)
+	case StateFingerprintAuth:
+		return m.updateFingerprintAuthState(msg)
 	case StatePasswordPrompt:
 		return m.updatePasswordPromptState(msg)
 	case StateInstallingPackages:
@@ -158,6 +163,10 @@ func (m Model) View() string {
 		return m.viewDetectingDeps()
 	case StateDependencyReview:
 		return m.viewDependencyReview()
+	case StateAuthMethodChoice:
+		return m.viewAuthMethodChoice()
+	case StateFingerprintAuth:
+		return m.viewFingerprintAuth()
 	case StatePasswordPrompt:
 		return m.viewPasswordPrompt()
 	case StateInstallingPackages:

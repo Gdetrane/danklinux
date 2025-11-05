@@ -35,3 +35,5 @@ type passwordValidMsg struct {
 	password string
 	valid    bool
 }
+
+type delayCompleteMsg struct{}

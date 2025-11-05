@@ -9,6 +9,8 @@ const (
 	StateMissingWMInstructions
 	StateDetectingDeps
 	StateDependencyReview
+	StateAuthMethodChoice
+	StateFingerprintAuth
 	StatePasswordPrompt
 	StateInstallingPackages
 	StateConfigConfirmation
